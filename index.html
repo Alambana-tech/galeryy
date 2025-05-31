@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gallery Bravosec</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    padding: 20px;
+    max-width: 900px;
+    margin: auto;
+    background: #f9f9f9;
+  }
+  h1 {
+    text-align: center;
+    color: #333;
+  }
+  #login-section, #gallery-section {
+    max-width: 400px;
+    margin: auto;
+    background: white;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+  }
+  input[type="text"], input[type="password"], input[type="file"] {
+    width: 100%;
+    padding: 10px;
+    margin: 8px 0;
+    box-sizing: border-box;
+  }
+  button {
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+    background: #007bff;
+    border: none;
+    color: white;
+    font-weight: bold;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  button:hover {
+    background: #0056b3;
+  }
+  #gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill,minmax(150px,1fr));
+    gap: 15px;
+    margin-top: 20px;
+  }
+  #gallery img {
+    width: 100%;
+    border-radius: 10px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    object-fit: cover;
+    height: 150px;
+  }
+  .photo-card {
+    position: relative;
+  }
+  .delete-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(255,0,0,0.7);
+    border: none;
+    color: white;
+    font-weight: bold;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+  }
+  #logout-btn {
+    margin-top: 15px;
+    background: #dc3545;
+  }
+</style>
+</head>
+<body>
+
+<div id="login-section">
+  <h1>Login / Sign Up</h1>
+  <input type="text" id="username" placeholder="Username" />
+  <input type="password" id="password" placeholder="Password" />
+  <button id="login-btn">Login</button>
+  <button id="signup-btn" style="background:#28a745; margin-top: 8px;">Sign Up</button>
+</div>
+
+<div id="gallery-section" style="display:none;">
+  <h1>Gallery Upload Gambar</h1>
+  <form id="uploadForm">
+    <input type="file" id="photos" accept="image/*" multiple required />
+    <button type="submit">Upload Gambar</button>
+  </form>
+  <div id="gallery"></div>
+  <button id="logout-btn">Logout</button>
+</div>
+
+<script>
+  // Simple user storage di localStorage: { username: password }
+  function getUsers() {
+    return JSON.parse(localStorage.getItem('users') || '{}');
+  }
+  function saveUsers(users) {
+    localStorage.setItem('users', JSON.stringify(users));
+  }
+
+  // Simpan user yg login sekarang
+  function setCurrentUser(username) {
+    localStorage.setItem('currentUser', username);
+  }
+  function getCurrentUser() {
+    return localStorage.getItem('currentUser');
+  }
+  function clearCurrentUser() {
+    localStorage.removeItem('currentUser');
+  }
+
+  // IndexedDB untuk simpan gambar per user
+  let db;
+  function openDB(username) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('galleryDB-' + username, 1);
+      request.onerror = () => reject('Gagal membuka DB');
+      request.onupgradeneeded = (e) => {
+        db = e.target.result;
+        if(!db.objectStoreNames.contains('images')) {
+          db.createObjectStore('images', { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      request.onsuccess = (e) => {
+        db = e.target.result;
+        resolve();
+      };
+    });
+  }
+
+  function saveImage(blob) {
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['images'], 'readwrite');
+      const store = transaction.objectStore('images');
+      const item = { image: blob };
+      const req = store.add(item);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject('Gagal simpan gambar');
+    });
+  }
+
+  function loadImages() {
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['images'], 'readonly');
+      const store = transaction.objectStore('images');
+      const getAll = store.getAll();
+
+      getAll.onsuccess = () => {
+        resolve(getAll.result);
+      };
+      getAll.onerror = () => reject('Gagal load gambar');
+    });
+  }
+
+  function deleteImage(id) {
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['images'], 'readwrite');
+      const store = transaction.objectStore('images');
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject('Gagal hapus gambar');
+    });
+  }
+
+  // UI Elements
+  const loginSection = document.getElementById('login-section');
+  const gallerySection = document.getElementById('gallery-section');
+  const usernameInput = document.getElementById('username');
+  const passwordInput = document.getElementById('password');
+  const loginBtn = document.getElementById('login-btn');
+  const signupBtn = document.getElementById('signup-btn');
+  const uploadForm = document.getElementById('uploadForm');
+  const galleryDiv = document.getElementById('gallery');
+  const logoutBtn = document.getElementById('logout-btn');
+
+  // Show gallery dan load gambar
+  async function showGallery(username) {
+    await openDB(username);
+    loginSection.style.display = 'none';
+    gallerySection.style.display = 'block';
+    renderGallery();
+  }
+
+  async function renderGallery() {
+    galleryDiv.innerHTML = 'Loading...';
+    try {
+      const images = await loadImages();
+      galleryDiv.innerHTML = '';
+      if(images.length === 0) {
+        galleryDiv.innerHTML = '<p>Belum ada gambar yang diupload.</p>';
+        return;
+      }
+      images.forEach(item => {
+        const url = URL.createObjectURL(item.image);
+        const div = document.createElement('div');
+        div.className = 'photo-card';
+
+        const img = document.createElement('img');
+        img.src = url;
+
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '×';
+        delBtn.className = 'delete-btn';
+        delBtn.onclick = async () => {
+          await deleteImage(item.id);
+          renderGallery();
+        };
+
+        div.appendChild(img);
+        div.appendChild(delBtn);
+        galleryDiv.appendChild(div);
+      });
+    } catch {
+      galleryDiv.innerHTML = '<p>Gagal load gambar.</p>';
+    }
+  }
+
+  // Login handler
+  loginBtn.onclick = () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+    if(!username || !password) {
+      alert('Masukkan username dan password');
+      return;
+    }
+    const users = getUsers();
+    if(users[username] && users[username] === password) {
+      setCurrentUser(username);
+      showGallery(username);
+    } else {
+      alert('Username atau password salah');
+    }
+  };
+
+  // Sign up handler
+  signupBtn.onclick = () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+    if(!username || !password) {
+      alert('Masukkan username dan password');
+      return;
+    }
+    const users = getUsers();
+    if(users[username]) {
+      alert('Username sudah dipakai');
+      return;
+    }
+    users[username] = password;
+    saveUsers(users);
+    alert('Akun berhasil dibuat! Silakan login.');
+  };
+
+  // Upload handler
+  uploadForm.onsubmit = async e => {
+    e.preventDefault();
+    const files = document.getElementById('photos').files;
+    if(files.length === 0) {
+      alert('Pilih minimal 1 gambar!');
+      return;
+    }
+    for(let file of files) {
+      if(!file.type.startsWith('image/')) {
+        alert('File harus gambar!');
+        continue;
+      }
+      await saveImage(file);
+    }
+    uploadForm.reset();
+    renderGallery();
+  };
+
+  // Logout
+  logoutBtn.onclick = () => {
+    clearCurrentUser();
+    gallerySection.style.display = 'none';
+    loginSection.style.display = 'block';
+    usernameInput.value = '';
+    passwordInput.value = '';
+    galleryDiv.innerHTML = '';
+  };
+
+  // Auto login kalau sudah pernah login
+  window.onload = () => {
+    const currentUser = getCurrentUser();
+    if(currentUser) {
+      showGallery(currentUser);
+    }
+  };
+</script>
+
+</body>
+</html>
